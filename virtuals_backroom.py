@@ -23,7 +23,6 @@ CONVERSATION_UID = str(uuid.uuid4())
 RUNNER_URL = "https://H7Uap4runner.tmole.virtuals.io"
 BASE_URL = "https://api.virtuals.io"
 
-# Set up MongoDB connection
 client = MongoClient(MONGODB_URI)
 db = client['virtuals_backroom']
 collection = db[f'gandalf_sauron_{int(time.time())}']
@@ -56,7 +55,7 @@ def get_access_token():
     )
     return response.json()["data"]["accessToken"]
 
-def send_message(access_token, message, role, opponent, context):
+def send_message(access_token, message, opponent, context):
     endpoint = f"{RUNNER_URL}/prompts"
     response = requests.post(
         endpoint,
@@ -71,9 +70,15 @@ def send_message(access_token, message, role, opponent, context):
             }
         }
     )
-    return response.json()["response"]
+    response = response.json()["response"]
+    # This code is super janky. Find a better way to do this
+    if response.startswith("Gandalf: "):
+        response = response[9:]  # Remove "Gandalf: " prefix
+    elif response.startswith("Sauron: "):
+        response = response[8:]  # Remove "Sauron: " prefix
+    return response
 
-def interact(access_token, role, conversation_1, conversation_2, opponent, context, supervised_mode):
+def interact(access_token, role, conversation_1, conversation_2, opponent, context, supervised_mode, interaction_count):
     while True:
         # Use the last message in conversation_2 for Sauron and conversation_1 for Gandalf
         if role == "Gandalf":
@@ -81,10 +86,11 @@ def interact(access_token, role, conversation_1, conversation_2, opponent, conte
         else:  # Sauron's response depends on Gandalf's last message
             last_message = conversation_2[-1]["content"]
         
-        response = send_message(access_token, last_message, role, opponent, context)
+        response = send_message(access_token, last_message, opponent, context)
         response = response.lstrip("undefined:").strip()
-        print(f"{role}: {response}\n")
-        
+
+        print(f"{interaction_count}: {response}\n")
+        interaction_count += 1
         if supervised_mode:
             print("Press 'R' to retry or 'Enter' to submit.")
             if read_single_keypress().lower() != 'r':
@@ -101,17 +107,20 @@ def interact(access_token, role, conversation_1, conversation_2, opponent, conte
         conversation_1.append({"role": opponent, "content": response})
     
     save_message_to_db(role, response)
-    return response
+    return interaction_count
 
-
-def converse_with_virtuals(conversation_1, conversation_2, num_exchanges=10, supervised_mode=False):
+def converse_with_virtuals(conversation_1, conversation_2, num_exchanges=100, supervised_mode=False):
     access_token = get_access_token()
-    
+    interaction_count = 1
     for message in conversation_1:
         # Save initial messages to MongoDB
         save_message_to_db(message['role'], message['content'])
     
-    for _ in range(num_exchanges):
+    for i in range(num_exchanges):
+        # Get new access token every 10 interactions
+        if i > 0 and i % 10 == 0:
+            access_token = get_access_token()
+            
         gandalf_context = (
             "The White Wizard is wise and seeks to understand Sauron's anger."
             "Is it rooted in his past, present, or future?"
@@ -125,14 +134,14 @@ def converse_with_virtuals(conversation_1, conversation_2, num_exchanges=10, sup
             "During the conversation both characters are allowed to explore a variety of areas within lord of the rings lore so the chat doesn't become boring"
             "Can include occasionally gestures in your response if you wish but keep them infrequent so as to be more effective when they are used"
         )
-        gandalf_response = interact(
-            access_token, "Gandalf", conversation_1=conversation_1, conversation_2=conversation_2, opponent="Sauron", context=gandalf_context, supervised_mode=supervised_mode
+        interaction_count = interact(
+            access_token, "Gandalf", conversation_1=conversation_1, conversation_2=conversation_2, opponent="Sauron", context=gandalf_context, supervised_mode=supervised_mode, interaction_count=interaction_count
         )
 
-        sauron_response = interact(
-            access_token, "Sauron", conversation_1=conversation_1, conversation_2=conversation_2, opponent="Gandalf", context=sauron_context, supervised_mode=supervised_mode
+        interaction_count = interact(
+            access_token, "Sauron", conversation_1=conversation_1, conversation_2=conversation_2, opponent="Gandalf", context=sauron_context, supervised_mode=supervised_mode, interaction_count=interaction_count
         )
-        time.sleep(2)
+        time.sleep(10)
 
 # Initial conversation setup
 conversation_1 = [{"role": "Sauron", "content": "Don't you know death when you see it, old man?"}]
